@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
+  <title>U1 Nodes + Cosmic Flow</title>
+  <style>
+    html, body { margin:0; padding:0; height:100%; background:#000; overflow:hidden; touch-action:none; overscroll-behavior:none; }
+    canvas { display:block; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.4.0/lib/p5.min.js"></script>
+</head>
+<body>
+<script>
+let reducedMotion = false;	
+	let flowGrid;
+
+function setupZoomGuards() {
+  window.addEventListener('wheel', e => { if (e.ctrlKey) e.preventDefault(); }, {passive:false});
+  ['gesturestart','gesturechange','gestureend'].forEach(ev =>
+    window.addEventListener(ev, e => e.preventDefault(), {passive:false})
+  );
+  document.addEventListener('touchmove', e => { if (e.scale && e.scale !== 1) e.preventDefault(); }, {passive:false});
+}
+
+let bandsLayer;
+let flowLayer;
+let nodeLayer;
+
+const U1 = {
+  baseHz: 0.18,
+  bandHz: 0.22,
+  k1Scale: 0.008,
+  k2Scale: 0.005,
+  lambdaMin: 610,
+  lambdaMax: 700
+};
+
+function u1Phase(x, y, t) {
+  const w1 = TWO_PI * (reducedMotion ? U1.baseHz * 0.25 : U1.baseHz);
+  const w2 = TWO_PI * (reducedMotion ? U1.bandHz * 0.25 : U1.bandHz);
+  const k1x = U1.k1Scale, k1y = U1.k1Scale * 1.3;
+  const k2x = U1.k2Scale * -0.9, k2y = U1.k2Scale * 1.1;
+  const th1 = k1x * x + k1y * y - w1 * t + 0.7;
+  const th2 = k2x * x + k2y * y - w2 * t + 1.8;
+  const re = Math.cos(th1) + 0.65 * Math.cos(th2);
+  const im = Math.sin(th1) + 0.65 * Math.sin(th2);
+  let theta = Math.atan2(im, re);
+  if (theta < 0) theta += TWO_PI;
+  return theta;
+}
+
+function phaseToLambda(theta, t, spanMin = U1.lambdaMin, spanMax = U1.lambdaMax) {
+  const base = map(theta, 0, TWO_PI, spanMin, spanMax);
+  const slow = 0.5 + 0.5 * Math.sin(t * (reducedMotion ? 0.2 : 0.6));
+  const spread = 20;
+  return constrain(base + (slow - 0.5) * spread, 380, 700);
+}
+
+function wavelengthToRGB(lambda) {
+  let R = 0, G = 0, B = 0;
+  if (lambda >= 380 && lambda < 440) { R = -(lambda - 440) / 60; G = 0; B = 1; }
+  else if (lambda < 490) { R = 0; G = (lambda - 440) / 50; B = 1; }
+  else if (lambda < 510) { R = 0; G = 1; B = -(lambda - 510) / 20; }
+  else if (lambda < 580) { R = (lambda - 510) / 70; G = 1; B = 0; }
+  else if (lambda < 645) { R = 1; G = -(lambda - 645) / 65; B = 0; }
+  else if (lambda <= 700) { R = 1; G = 0; B = 0; }
+  let A = 1.0;
+  if (lambda >= 380 && lambda < 420) A = 0.3 + 0.7 * (lambda - 380) / 40;
+  else if (lambda > 645) A = 0.3 + 0.7 * (700 - lambda) / 55;
+  const gamma = 0.8;
+  R = Math.pow(R, gamma) * 255;
+  G = Math.pow(G, gamma) * 255;
+  B = Math.pow(B, gamma) * 255;
+  return [R, G, B, A];
+}
+
+function spectralColor(lambda, alphaScale = 1.0) {
+  const [r, g, b, a] = wavelengthToRGB(lambda);
+  return [r, g, b, 255 * a * alphaScale];
+}
+
+let nodes = [];
+const NCFG = {
+  nodeCount: 150,
+  maxSpeed: 0.65,
+  linkDist: 180,
+  nodeSize: 4.8
+};
+
+class Node {
+  constructor(x, y) {
+    this.pos = createVector(x, y);
+    this.vel = p5.Vector.random2D().mult(random(0.2, NCFG.maxSpeed));
+    this.seed = random(1000);
+    this.phase = random(TWO_PI);
+  }
+
+  move(t) {
+    const n = noise(this.pos.x * 0.0016, this.pos.y * 0.0016, t * 0.06 + this.seed);
+    const ang = map(n, 0, 1, -PI, PI);
+    const steer = p5.Vector.fromAngle(ang).setMag(0.08);
+    this.vel.add(steer).limit(NCFG.maxSpeed);
+    this.pos.add(this.vel);
+    if (mouseX >= 0 && mouseX <= width && mouseY >= 0 && mouseY <= height) {
+      const m = createVector(mouseX, mouseY);
+      const d = p5.Vector.dist(this.pos, m);
+      if (d < 150) {
+        const away = p5.Vector.sub(this.pos, m).setMag(map(d, 0, 150, 1.3, 0));
+        this.pos.add(away);
+      }
+    }
+    if (this.pos.x < -10) this.pos.x = width + 10;
+    if (this.pos.x > width + 10) this.pos.x = -10;
+    if (this.pos.y < -10) this.pos.y = height + 10;
+    if (this.pos.y > height + 10) this.pos.y = -10;
+  }
+
+  draw(t, pg) {
+    const pulse = 0.55 + 0.45 * Math.sin(t * 2.2 + this.phase);
+    const s = NCFG.nodeSize * (0.85 + 0.55 * pulse);
+    pg.push();
+    pg.colorMode(HSB, 360, 100, 100, 100);
+    pg.noStroke();
+    pg.fill(0, 90, 100, 95);
+    pg.circle(this.pos.x, this.pos.y, s);
+    pg.fill(0, 90, 100, 22);
+    pg.circle(this.pos.x, this.pos.y, s * 3.6);
+    pg.pop();
+  }
+}
+
+function initNodes() {
+  nodes.length = 0;
+  for (let i = 0; i < NCFG.nodeCount; i++) {
+    nodes.push(new Node(random(width), random(height)));
+  }
+}
+
+function drawLinks(t, pg) {
+  for (let i = 0; i < nodes.length; i++) {
+    const a = nodes[i];
+    for (let j = i + 1; j < nodes.length; j++) {
+      const b = nodes[j];
+      const dx = a.pos.x - b.pos.x;
+      const dy = a.pos.y - b.pos.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < NCFG.linkDist * NCFG.linkDist) {
+        const d = Math.sqrt(d2);
+        pg.push();
+        pg.colorMode(HSB, 360, 100, 100, 100);
+        const alpha = map(d, 0, NCFG.linkDist, 80, 18);
+        pg.stroke(0, 90, 100, alpha);
+        pg.strokeWeight(map(d, 0, NCFG.linkDist, 2.4, 0.9));
+        pg.line(a.pos.x, a.pos.y, b.pos.x, b.pos.y);
+        pg.pop();
+      }
+    }
+  }
+}
+
+function drawBands(t, pg) {
+  const N = 72;
+  const w = width / N + 2;
+  pg.noStroke();
+  for (let i = 0; i < N; i++) {
+    const u = i / (N - 1);
+    const x = u * width;
+    const yWarp = height * 0.5 + 90 * Math.sin(t * 0.35 + u * TWO_PI);
+    const theta = u1Phase(x, yWarp, t);
+    const lambda = phaseToLambda(theta, t, 540, 690);
+    const col = spectralColor(lambda, 0.085);
+    pg.fill(...col);
+    pg.rect(x - w * 0.5, 0, w, height);
+  }
+}
+
+const NUM = 1500;
+const gridSize = 20;
+const noiseScale = 0.005;
+let zOff = 0;
+let zStep = 0.0015;
+
+let particles = [];
+let palette = [];
+
+class Particle {
+  constructor() {
+    this.pos = createVector(random(width), random(height));
+    this.vel = p5.Vector.random2D().mult(random(0.2));
+    this.acc = createVector(0, 0);
+    this.sz = random(1, 4);
+    this.hIdx = floor(random(5));
+  }
+
+  getFlowAngle() {
+    const gridX = (this.pos.x / width) * gridSize;
+    const gridY = (this.pos.y / height) * gridSize;
+    const i0 = floor(gridX) % gridSize;
+    const i1 = (i0 + 1) % gridSize;
+    const j0 = floor(gridY) % gridSize;
+    const j1 = (j0 + 1) % gridSize;
+    const tx = gridX - floor(gridX);
+    const ty = gridY - floor(gridY);
+    const a00 = flowGrid[i0][j0];
+    const a01 = flowGrid[i0][j1];
+    const a10 = flowGrid[i1][j0];
+    const a11 = flowGrid[i1][j1];
+    const a0 = lerp(a00, a01, ty);
+    const a1 = lerp(a10, a11, ty);
+    return lerp(a0, a1, tx);
+  }
+
+  applyMouseAttraction() {
+    if (mouseIsPressed) {
+      const toM = createVector(mouseX - this.pos.x, mouseY - this.pos.y);
+      const d = toM.mag();
+      if (d > 0.0001) {
+        toM.normalize();
+        const strength = 0.18 * (1.0 / (d + 1.0));
+        this.acc.add(toM.mult(strength));
+      }
+    }
+  }
+
+  applyFlow() {
+    const ang = this.getFlowAngle();
+    const force = p5.Vector.fromAngle(ang).mult(0.28);
+    this.acc.add(force);
+  }
+
+  physics() {
+    this.vel.add(this.acc);
+    this.vel.mult(0.985);
+    this.vel.limit(3.6);
+    this.pos.add(this.vel);
+    this.acc.mult(0);
+    if (this.pos.x < 0) this.pos.x += width;
+    if (this.pos.x > width) this.pos.x -= width;
+    if (this.pos.y < 0) this.pos.y += height;
+    if (this.pos.y > height) this.pos.y -= height;
+  }
+
+  display(pg) {
+    const h = palette[this.hIdx];
+    pg.fill(h, 80, 100, 8);
+    pg.noStroke();
+    pg.ellipse(this.pos.x, this.pos.y, this.sz, this.sz);
+  }
+
+  step(pg) {
+    this.applyFlow();
+    this.applyMouseAttraction();
+    this.physics();
+    this.display(pg);
+  }
+}
+
+function updatePalette() {
+  const baseHue = (frameCount * 0.1) % 360;
+  palette.length = 0;
+  for (let i = 0; i < 5; i++) palette.push((baseHue + 72 * i) % 360);
+}
+
+function drawCursor(t) {
+  if (mouseX < 0 || mouseX > width || mouseY < 0 || mouseY > height) return;
+  noStroke();
+  fill(0, 0, 100, 100);
+  circle(mouseX, mouseY, 3.5);
+  const theta = u1Phase(mouseX, mouseY, t);
+  const lambda = phaseToLambda(theta, t, 610, 690);
+  const [r, g, b, a] = spectralColor(lambda, 1.0);
+  noFill();
+  stroke(r, g, b, a);
+  const r0 = 14 + 4 * (0.5 + 0.5 * Math.sin(t * 2.0));
+  strokeWeight(2);
+  circle(mouseX, mouseY, r0);
+  stroke(r, g, b, 120);
+  strokeWeight(6);
+  circle(mouseX, mouseY, r0 + 10);
+}
+
+function setup() {
+  createCanvas(windowWidth, windowHeight);
+  colorMode(HSB, 360, 100, 100, 100);
+  setupZoomGuards();
+  noCursor();
+  bandsLayer = createGraphics(windowWidth, windowHeight);
+  bandsLayer.colorMode(RGB, 255, 255, 255, 255);
+  flowLayer = createGraphics(windowWidth, windowHeight);
+  flowLayer.colorMode(HSB, 360, 100, 100, 100);
+  flowLayer.noStroke();
+  flowLayer.background(0);
+  nodeLayer = createGraphics(windowWidth, windowHeight);
+  nodeLayer.colorMode(RGB, 255, 255, 255, 255);
+  flowGrid = Array.from({length: gridSize}, () => new Array(gridSize));
+  initNodes();
+  particles = Array.from({length: NUM}, () => new Particle());
+}
+
+	function windowResized() {
+		resizeCanvas(windowWidth, windowHeight);
+			bandsLayer = createGraphics(windowWidth, windowHeight);
+				bandsLayer.colorMode(RGB, 255, 255, 255, 255);
+					flowLayer = createGraphics(windowWidth, windowHeight);
+						flowLayer.colorMode(HSB, 360, 100, 100, 100);
+					flowLayer.noStroke();
+				flowLayer.background(0);
+			nodeLayer = createGraphics(windowWidth, windowHeight);
+		nodeLayer.colorMode(RGB, 255, 255, 255, 255);
+	initNodes();
+particles = Array.from({length: NUM}, () => new Particle());
+}
+
+function drawBandsLayer(t) {
+	bandsLayer.clear();
+		bandsLayer.background(8, 3, 6);
+			drawBands(t, bandsLayer);
+				bandsLayer.push();
+					bandsLayer.blendMode(bandsLayer.MULTIPLY);
+						bandsLayer.fill(0, 0, 0, 28);
+							bandsLayer.rect(0, 0, width, height);
+								bandsLayer.pop();
+}
+
+	function drawNodeLayer(t) {
+		nodeLayer.clear();
+			nodeLayer.push();
+				drawLinks(t, nodeLayer);
+				nodeLayer.pop();
+					for (const n of nodes) n.move(t);
+						for (const n of nodes) n.draw(t, nodeLayer);
+}
+
+function drawFlowLayer() {
+  flowLayer.blendMode(flowLayer.BLEND);
+  flowLayer.fill(0, 0, 0, 5);
+  flowLayer.rect(0, 0, width, height);
+  for (let i = 0; i < gridSize; i++) {
+    for (let j = 0; j < gridSize; j++) {
+      const x = (i + 0.5) * (width / gridSize);
+      const y = (j + 0.5) * (height / gridSize);
+      const nx = x * noiseScale;
+      const ny = y * noiseScale;
+      const n1 = noise(nx, ny, zOff);
+      const n2 = noise(nx * 2.0, ny * 2.0, zOff * 2.0);
+      const field = (n1 + 0.5 * n2) / 1.5;
+      flowGrid[i][j] = TWO_PI * field;
+    }
+  }
+  updatePalette();
+  flowLayer.blendMode(flowLayer.ADD);
+  for (let i = 0; i < particles.length; i++) particles[i].step(flowLayer);
+  zOff += zStep;
+}
+
+function draw() {
+  const t = millis() * 0.001;
+  drawBandsLayer(t);
+  drawFlowLayer();
+  drawNodeLayer(t);
+  image(bandsLayer, 0, 0, width, height);
+  image(flowLayer, 0, 0, width, height);
+  image(nodeLayer, 0, 0, width, height);
+  drawCursor(t);
+}
+
+function keyPressed() {
+  if (key === 'r' || key === 'R') initNodes();
+  if (key === 's' || key === 'S') saveCanvas('u1-nodes-cosmic-flow', 'png');
+  if (key === 'm' || key === 'M') reducedMotion = !reducedMotion;
+}
+
+</script>
+</body>
+</html>
