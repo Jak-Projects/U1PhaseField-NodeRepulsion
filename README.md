@@ -1,7 +1,7 @@
 # U1PhaseField-NodeRepulsion
 Background HTML GUI -High CPU- BETA
 
-
+!!!20% CPU on an i7-13700!!!
 The background color is driven by a phase value. That phase comes from adding two moving, slanted waves. Think of each wave like evenly spaced stripes sliding over time. You add their directions as complex numbers, then take the compass angle of the result. That angle runs from 0 to a full turn.
 
 We convert this angle into a light wavelength. Then we wiggle the wavelength a little with a slow sine. A small wiggle avoids harsh color jumps. We clamp to the visible range so it never goes out of gamut. A piecewise function turns wavelength into RGB. A gamma curve brightens darker primaries to look right on screens. Edge wavelengths get lower alpha to mimic how human eyes see less near the extremes.
